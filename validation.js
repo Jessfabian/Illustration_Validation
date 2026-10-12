@@ -363,6 +363,7 @@
           normalized(saved.originalValue) === normalized(entry.v) &&
           (saved.documentType === documentType ||
             saved.documentType === "unknown")
+
         );
       });
       if (rule) {
@@ -372,6 +373,21 @@
         entry.corrected = true;
         entry.learned = true;
         entry.learningRuleId = rule.id;
+        if (rule) {
+          console.log(
+            "LEARNED RULE APPLIED",
+            key,
+            entry.v,
+            "→",
+            rule.correctedValue,
+          );
+
+          entry.originalValue = entry.v;
+          entry.v = rule.correctedValue;
+          entry.c = 100;
+          entry.corrected = true;
+          entry.learned = true;
+        }
       }
     });
     return fieldMap;
@@ -665,6 +681,21 @@
       },
     );
     return applyLearning(kind, result, documentType);
+    if (rule) {
+      console.log(
+        "LEARNED RULE APPLIED",
+        key,
+        entry.v,
+        "→",
+        rule.correctedValue,
+      );
+
+      entry.originalValue = entry.v;
+      entry.v = rule.correctedValue;
+      entry.c = 100;
+      entry.corrected = true;
+      entry.learned = true;
+    }
   }
 
   async function extractPdf(file, kind) {
