@@ -353,8 +353,10 @@
   }
   function applyLearning(kind, fieldMap, documentType) {
     var rules = getLearningRules();
+
     Object.keys(fieldMap).forEach(function (key) {
       var entry = fieldMap[key];
+
       var rule = rules.find(function (saved) {
         return (
           saved.autoApply === true &&
@@ -363,33 +365,26 @@
           normalized(saved.originalValue) === normalized(entry.v) &&
           (saved.documentType === documentType ||
             saved.documentType === "unknown")
-
         );
       });
+
       if (rule) {
+        console.log("LEARNED RULE APPLIED", {
+          field: key,
+          original: entry.v,
+          corrected: rule.correctedValue,
+          ruleId: rule.id,
+        });
+
         entry.originalValue = entry.v;
         entry.v = rule.correctedValue;
         entry.c = 100;
         entry.corrected = true;
         entry.learned = true;
         entry.learningRuleId = rule.id;
-        if (rule) {
-          console.log(
-            "LEARNED RULE APPLIED",
-            key,
-            entry.v,
-            "→",
-            rule.correctedValue,
-          );
-
-          entry.originalValue = entry.v;
-          entry.v = rule.correctedValue;
-          entry.c = 100;
-          entry.corrected = true;
-          entry.learned = true;
-        }
       }
     });
+
     return fieldMap;
   }
 
@@ -681,21 +676,6 @@
       },
     );
     return applyLearning(kind, result, documentType);
-    if (rule) {
-      console.log(
-        "LEARNED RULE APPLIED",
-        key,
-        entry.v,
-        "→",
-        rule.correctedValue,
-      );
-
-      entry.originalValue = entry.v;
-      entry.v = rule.correctedValue;
-      entry.c = 100;
-      entry.corrected = true;
-      entry.learned = true;
-    }
   }
 
   async function extractPdf(file, kind) {
@@ -892,8 +872,10 @@
         "field " + (entry.c >= 85 ? "high" : entry.c < 50 ? "low" : "");
       var metadata = [
         entry.pageNumber ? "page " + entry.pageNumber : "",
+
         entry.pageType || "",
-        entry.learned ? "learned correction applied" : "",
+
+        entry.learned ? "🧠 learned correction applied" : "",
       ]
         .filter(Boolean)
         .join(" • ");
@@ -1077,7 +1059,15 @@
         if ($("extractBtn")) $("extractBtn").disabled = false;
       }
     });
+  var learnedCount = 0;
 
+  if (docs.ill && docs.ill.fields) {
+    learnedCount = Object.values(docs.ill.fields).filter(function (field) {
+      return field.learned === true;
+    }).length;
+  }
+
+  console.log("TOTAL LEARNED CORRECTIONS APPLIED:", learnedCount);
   function meaningful(value) {
     var n = normalized(value);
     return !!n && n !== "not found" && n !== "manual review";
