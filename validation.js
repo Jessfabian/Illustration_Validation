@@ -396,6 +396,19 @@
     if (/whole life/.test(sample)) return "whole-life";
     return "unknown";
   }
+  function getProductType() {
+    const planText = (
+      (docs.app?.fields?.plan?.v || "") +
+      " " +
+      (docs.ill?.fields?.plan?.v || "")
+    ).toLowerCase();
+
+    if (planText.includes("vantage term") || planText.includes("term")) {
+      return "TERM";
+    }
+
+    return "WHOLE_LIFE";
+  }
   function pageType(text) {
     if (/client input summary/i.test(text)) return "Client Input Summary";
     if (/policy assumptions|whole life insurance summary/i.test(text))
@@ -1037,6 +1050,19 @@
         ]);
         docs.app = both[0];
         docs.ill = both[1];
+
+        var learnedCount = 0;
+
+        if (docs.ill && docs.ill.fields) {
+          learnedCount = Object.values(docs.ill.fields).filter(
+            function (field) {
+              return field.learned === true;
+            },
+          ).length;
+        }
+
+        console.log("TOTAL LEARNED CORRECTIONS APPLIED:", learnedCount);
+
         if ($("appText")) $("appText").value = docs.app.text;
         if ($("illText")) $("illText").value = docs.ill.text;
         renderFields("app");
@@ -1061,11 +1087,7 @@
     });
   var learnedCount = 0;
 
-  if (docs.ill && docs.ill.fields) {
-    learnedCount = Object.values(docs.ill.fields).filter(function (field) {
-      return field.learned === true;
-    }).length;
-  }
+ 
 
   console.log("TOTAL LEARNED CORRECTIONS APPLIED:", learnedCount);
   function meaningful(value) {
@@ -1114,21 +1136,63 @@
       return;
     }
     showError("");
-    var app = docs.app.fields,
-      ill = docs.ill.fields,
-      state = $("state") ? $("state").value : "",
-      rows = [],
-      requirements = [];
+
+var app = docs.app.fields;
+var ill = docs.ill.fields;
+
+var planText =
+(
+  (app.plan && app.plan.v
+    ? app.plan.v
+    : "") +
+  " " +
+  (ill.plan && ill.plan.v
+    ? ill.plan.v
+    : "")
+).toLowerCase();
+
+var isVantageTerm =
+  planText.includes("vantage term") ||
+  planText.includes("term");
+
+var state =
+  $("state")
+    ? $("state").value
+    : "";
+
+var rows = [];
+var requirements = [];
+[
+  "plan",
+  "faceAmount",
+  "apl",
+  "loanRate",
+  "dividend",
+  "waiver",
+  "gir",
+  "frequency"
+].forEach(function (key) {
+  if (
+    isVantageTerm &&
     [
-      "plan",
-      "faceAmount",
       "apl",
       "loanRate",
       "dividend",
-      "waiver",
       "gir",
-      "frequency",
-    ].forEach(function (key) {
+      "lisr"
+    ].includes(key)
+) {
+
+    rows.push({
+        label: fieldLabel(key),
+        app: "N/A",
+        ill: "N/A",
+        result: "Excluded",
+        note: "Not applicable for Vantage Term products."
+    });
+
+    return;
+}
       var appValue = app[key] ? app[key].v : "",
         illValue = ill[key] ? ill[key].v : "",
         result = "Review",
