@@ -1,8 +1,8 @@
-name: Deploy Static Content to GitHub Pages
+name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: ["main"] # Change to your branch name if it is not main
+    branches: ["main"] # Change to "master" if your default branch is master
 
 permissions:
   contents: read
@@ -23,14 +23,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
+      # Creates a temporary build folder and organizes your files safely
+      - name: Prepare Files
+        run: |
+          mkdir build
+          cp -r "MM Projects/Illustration Validation/static" build/static
+          cp "MM Projects/Illustration Validation/templates/index.html" build/index.html
 
-      - name: Upload artifact
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Point this exactly to your directory path layout
-          path: './MM Projects/Illustration Validation/templates'
+          path: './build'
 
       - name: Deploy to GitHub Pages
         id: deployment
