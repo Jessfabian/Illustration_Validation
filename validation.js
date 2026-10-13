@@ -35,10 +35,12 @@
     ["dividend", "Dividend option", "text"],
     ["waiver", "Waiver of Premium", "text"],
     ["gir", "GIR", "text"],
+    ["rtr", "RTR", "text"],
     ["lisr", "LISR", "choice"],
-    ["billing", "Billing type", "text"],
+    ["lisrTfa", "LISR Target Face Amount", "text"],
+    ["lisrModal", "LISR Modal Payment", "text"],
+    ["lisrLumpSum", "LISR Unscheduled Lump Sum", "text"],
     ["frequency", "Payment frequency", "text"],
-    ["createdDates", "Created date(s)", "text"],
     ["signedDate", "Signature date", "text"],
     ["signatureEvidence", "Signature evidence", "signature"],
   ];
@@ -519,6 +521,11 @@
     return firstCandidate(
       pages,
       [
+        /(?:☒|✓|■|●|X)\s*(Paid[- ]?Up Additions?|PUA)/i,
+
+        /(?:☒|✓|■|●|X)\s*(Cash)/i,
+
+        /(?:☒|✓|■|●|X)\s*(Dividend Accumulations?)/i,
         /(?:Initial Base Dividend Option|Initial Dividend Option|Dividend Option)\s*[:\-]?\s*(?:\d+\s+to\s+\d+\s*[-:]\s*)?(Paid[-\s]?Up Additions?|PUA|Cash|Supplemental Insurance Dividend\/Flex|Supplemental Insurance Dividend|Dividend Accumulations?|Accumulate at Interest|Reduce Premium)/i,
         /Dividend Option[^\n]{0,80}\b(Paid[-\s]?Up Additions?|PUA|Cash|Supplemental Insurance Dividend\/Flex|Supplemental Insurance Dividend|Dividend Accumulations?|Accumulate at Interest|Reduce Premium)\b/i,
         /(?:☒|✓|■|●|X)\s*(Paid[-\s]?Up Additions?|PUA|Cash|Supplemental Insurance Dividend\/Flex|Dividend Accumulations?|Accumulate at Interest|Reduce Premium)/i,
@@ -569,24 +576,78 @@
       cleanAplValue,
     );
   }
-
+  function parseLisrTfaFromPages(pages) {
+    return firstCandidate(
+      pages,
+      [
+        /LISR Target Face Amount\s*[:\-]?\s*([^\n]{1,50})/i,
+        /Target Face Amount\s*[:\-]?\s*([^\n]{1,50})/i,
+        /\bTFA\b\s*[:\-]?\s*([^\n]{1,50})/i,
+      ],
+      money,
+    );
+  }
+  function parseLisrModalFromPages(pages) {
+    return firstCandidate(
+      pages,
+      [
+        /Modal Payment\s*[:\-]?\s*([^\n]{1,50})/i,
+        /Monthly Payment\s*[:\-]?\s*([^\n]{1,50})/i,
+        /Premium Payment\s*[:\-]?\s*([^\n]{1,50})/i,
+      ],
+      money,
+    );
+  }
+  function parseLisrLumpSumFromPages(pages) {
+    return firstCandidate(
+      pages,
+      [
+        /Unscheduled Lump Sum\s*[:\-]?\s*([^\n]{1,50})/i,
+        /Lump Sum Contribution\s*[:\-]?\s*([^\n]{1,50})/i,
+        /Additional Contribution\s*[:\-]?\s*([^\n]{1,50})/i,
+      ],
+      money,
+    );
+  }
   function parseDocument(kind, pages, text) {
     var documentType = classifyDocument(text);
+
     var result = {};
+
     if (kind === "app") {
       result.insuredName = candidateItem(
-        firstCandidate(pages, [
-          /Full legal name \(First, MI, Last, Suffix\)\s*[:\-]?\s*([^\n]{2,80})/i,
-          /Proposed Insured(?: Name)?\s*[:\-]?\s*([^\n]{2,80})/i,
-        ]),
+        firstCandidate(
+          pages,
+          [
+            /Full legal name\s*\(First,\s*MI,\s*Last,\s*Suffix\)\s*[:\-]?\s*([A-Za-z\s.'-]{3,80})/i,
+
+            /Proposed Insured(?: Name)?\s*[:\-]?\s*([A-Za-z\s.'-]{3,80})/i,
+          ],
+
+          function (value) {
+            return clean(value);
+          },
+        ),
+
         documentType,
       );
+
       result.faceAmount = candidateItem(
         firstCandidate(
           pages,
-          [/(?:Face amount|Amount of Insurance)\s*[:\-]?\s*([^\n]{1,50})/i],
-          money,
+          [
+            /Face Amount\s*[:\-]?\s*\$?([\d,]+)/i,
+
+            /Amount of Insurance\s*[:\-]?\s*\$?([\d,]+)/i,
+
+            /Initial Face Amount\s*[:\-]?\s*\$?([\d,]+)/i,
+          ],
+
+          function (value) {
+            return "$" + String(value).replace(/[^\d,]/g, "");
+          },
         ),
+
         documentType,
       );
     } else {
@@ -607,7 +668,22 @@
         documentType,
       );
     }
-    result.plan = candidateItem(parsePlanFromPages(pages), documentType);
+    result.plan = candidateItem(
+      firstCandidate(
+        pages,
+        [
+          /2\.\s*Plan\s*[:\-]?\s*(WholeLife\d+|Whole Life \d+|WL\s*\d+)/i,
+
+          /Plan\s*[:\-]?\s*(WholeLife\d+|Whole Life \d+|WL\s*\d+)/i,
+
+          /Vantage\s+Term\s+\d+/i,
+        ],
+
+        cleanPlanValue,
+      ),
+
+      documentType,
+    );
     result.apl = candidateItem(parseAplFromPages(pages), documentType);
     result.dividend = candidateItem(
       parseDividendFromPages(pages),
@@ -637,6 +713,17 @@
         documentType: documentType,
         extractionMethod: "Document presence check",
       },
+    );
+    result.lisrTfa = candidateItem(parseLisrTfaFromPages(pages), documentType);
+
+    result.lisrModal = candidateItem(
+      parseLisrModalFromPages(pages),
+      documentType,
+    );
+
+    result.lisrLumpSum = candidateItem(
+      parseLisrLumpSumFromPages(pages),
+      documentType,
     );
     result.billing = candidateItem(
       firstCandidate(pages, [
@@ -1087,8 +1174,6 @@
     });
   var learnedCount = 0;
 
- 
-
   console.log("TOTAL LEARNED CORRECTIONS APPLIED:", learnedCount);
   function meaningful(value) {
     var n = normalized(value);
@@ -1137,62 +1222,65 @@
     }
     showError("");
 
-var app = docs.app.fields;
-var ill = docs.ill.fields;
+    var app = docs.app.fields;
+    var ill = docs.ill.fields;
 
-var planText =
-(
-  (app.plan && app.plan.v
-    ? app.plan.v
-    : "") +
-  " " +
-  (ill.plan && ill.plan.v
-    ? ill.plan.v
-    : "")
-).toLowerCase();
+    var planText = (
+      (app.plan && app.plan.v ? app.plan.v : "") +
+      " " +
+      (ill.plan && ill.plan.v ? ill.plan.v : "")
+    ).toLowerCase();
 
-var isVantageTerm =
-  planText.includes("vantage term") ||
-  planText.includes("term");
+    var isVantageTerm =
+      planText.includes("vantage term") || planText.includes("term");
 
-var state =
-  $("state")
-    ? $("state").value
-    : "";
+    var state = $("state") ? $("state").value : "";
 
-var rows = [];
-var requirements = [];
-[
-  "plan",
-  "faceAmount",
-  "apl",
-  "loanRate",
-  "dividend",
-  "waiver",
-  "gir",
-  "frequency"
-].forEach(function (key) {
-  if (
-    isVantageTerm &&
+    var rows = [];
+    var requirements = [];
     [
+      "plan",
+      "faceAmount",
       "apl",
       "loanRate",
       "dividend",
+      "waiver",
       "gir",
-      "lisr"
-    ].includes(key)
-) {
+      "lisr",
+      "lisrTfa",
+      "lisrModal",
+      "lisrLumpSum",
+      "frequency",
+    ].forEach(function (key) {
+      if (
+        normalized(app.lisr ? app.lisr.v : "") !== "yes" &&
+        key.startsWith("lisr") &&
+        key !== "lisr"
+      ) {
+        rows.push({
+          label: fieldLabel(key),
+          app: "N/A",
+          ill: "N/A",
+          result: "Excluded",
+          note: "No LISR on policy.",
+        });
 
-    rows.push({
-        label: fieldLabel(key),
-        app: "N/A",
-        ill: "N/A",
-        result: "Excluded",
-        note: "Not applicable for Vantage Term products."
-    });
+        return;
+      }
+      if (
+        isVantageTerm &&
+        ["apl", "loanRate", "dividend", "gir", "lisr"].includes(key)
+      ) {
+        rows.push({
+          label: fieldLabel(key),
+          app: "N/A",
+          ill: "N/A",
+          result: "Excluded",
+          note: "Not applicable for Vantage Term products.",
+        });
 
-    return;
-}
+        return;
+      }
       var appValue = app[key] ? app[key].v : "",
         illValue = ill[key] ? ill[key].v : "",
         result = "Review",
