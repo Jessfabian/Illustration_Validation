@@ -21,10 +21,39 @@
     "dividend",
     "waiver",
     "lisr",
-    "billing",
     "frequency",
-    "signatureEvidence",
   ];
+  const NEVER_LEARN_FIELDS = ["insuredName", "signatureEvidence", "signedDate"];
+
+  var APPLICATION_QUESTION_MAP = {
+    insuredName: "A1",
+    wholeLife: {
+      maximumFaceAmount: "C1",
+      plan: "C2",
+      faceAmount: "C3",
+      apl: "C4",
+      loanRate: "C5",
+      dividend: "C6",
+      waiver: "C7",
+      gir: "C10",
+      rtr: "C11",
+      alirModalPayment: "C12a",
+      alirPlannedAmount: "C12b",
+      alirUnscheduledLumpSum: "C12c",
+      alirDividendOption: "C12d",
+      lisrFaceAmount: "C13a",
+      lisrModalPayment: "C13b",
+      lisrUnscheduledLumpSum: "C13c",
+      lisrPremiumPayingPeriod: "C13d",
+      lisrCrossoverYear: "C13e",
+    },
+    term: {
+      plan: "C16",
+      faceAmount: "C17",
+      waiver: "C18",
+      rider: "C19",
+    },
+  };
 
   var fields = [
     ["insuredName", "Insured name", "text"],
@@ -356,8 +385,18 @@
   function applyLearning(kind, fieldMap, documentType) {
     var rules = getLearningRules();
 
+    var neverLearnFields = ["insuredName", "signedDate", "signatureEvidence"];
+
     Object.keys(fieldMap).forEach(function (key) {
       var entry = fieldMap[key];
+
+      // Never apply learned corrections to these fields
+      if (neverLearnFields.indexOf(key) >= 0) {
+        entry.learned = false;
+        entry.learningRuleId = "";
+
+        return;
+      }
 
       var rule = rules.find(function (saved) {
         return (
@@ -370,21 +409,23 @@
         );
       });
 
-      if (rule) {
-        console.log("LEARNED RULE APPLIED", {
-          field: key,
-          original: entry.v,
-          corrected: rule.correctedValue,
-          ruleId: rule.id,
-        });
-
-        entry.originalValue = entry.v;
-        entry.v = rule.correctedValue;
-        entry.c = 100;
-        entry.corrected = true;
-        entry.learned = true;
-        entry.learningRuleId = rule.id;
+      if (!rule) {
+        return;
       }
+
+      console.log("LEARNED RULE APPLIED", {
+        field: key,
+        original: entry.v,
+        corrected: rule.correctedValue,
+        ruleId: rule.id,
+      });
+
+      entry.originalValue = entry.v;
+      entry.v = rule.correctedValue;
+      entry.c = 100;
+      entry.corrected = true;
+      entry.learned = true;
+      entry.learningRuleId = rule.id;
     });
 
     return fieldMap;
@@ -609,46 +650,382 @@
       money,
     );
   }
+  function selectedYesNo(value) {
+    var text = clean(value);
+    if (/(?:\[x\]|☒|■|✓|\bX\b)\s*Yes/i.test(text)) return "Yes";
+    if (/(?:\[x\]|☒|■|✓|\bX\b)\s*No/i.test(text)) return "No";
+    if (/\[(?:APL|WP|GIR|RTR|LISR)\]\s*Y\b/i.test(text)) return "Yes";
+    if (/\[(?:APL|WP|GIR|RTR|LISR)\]\s*N\b/i.test(text)) return "No";
+    return "";
+  }
+
+  function parseQuestionMoney(pages, patterns) {
+    return firstCandidate(pages, patterns, function (value) {
+      var match = String(value || "").match(/\$?\s*([\d,]+(?:\.\d{2})?)/);
+      return match ? "$" + match[1] : "";
+    });
+  }
+
+  function parseApplicationInsuredName(pages) {
+    function isPossiblePersonName(value) {
+      var text = clean(value);
+
+      if (!text) {
+        return false;
+      }
+
+      if (
+        /signature|printed name|date|city|state|owner|producer|juvenile|taxpayer|question|coverage|supplement|insured name/i.test(
+          text,
+        )
+      ) {
+        return false;
+      }
+
+      /*
+       * Accepts names containing 2 to 5 parts:
+       * First Last
+       * First M Last
+       * First Middle Last Suffix
+       */
+      return /^[A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){1,4}$/.test(
+        text,
+      );
+    }
+
+    function makeNameCandidate(value, pageNumber, method) {
+      return {
+        value: clean(value),
+        confidence: 98,
+        pageNumber: pageNumber,
+        pageType:
+          pageNumber === 1 ? "Personal Information" : "Agreements & Signatures",
+        matchedLabel:
+          pageNumber === 1
+            ? "A1 Full legal name"
+            : "Signature of Proposed Insured",
+        extractionMethod: method,
+      };
+    }
+
+    /*
+     * PRIMARY METHOD:
+     * On page 1, find Question 1 and read backward.
+     */
+    var pageOne = pages.find(function (page) {
+      return page.pageNumber === 1;
+    });
+
+    if (pageOne) {
+      var pageOneLines = pageOne.text
+        .split("\n")
+        .map(function (line) {
+          return clean(line);
+        })
+        .filter(Boolean);
+
+      var questionOneIndex = pageOneLines.findIndex(function (line) {
+        return /^1\s*\./.test(line) && /Full legal name|legal name/i.test(line);
+      });
+
+      if (questionOneIndex >= 0) {
+        /*
+         * The extracted PDF places the name before
+         * the Question 1 label.
+         */
+        for (
+          var beforeIndex = questionOneIndex - 1;
+          beforeIndex >= Math.max(0, questionOneIndex - 8);
+          beforeIndex--
+        ) {
+          var beforeValue = pageOneLines[beforeIndex];
+
+          if (isPossiblePersonName(beforeValue)) {
+            console.log("INSURED NAME FOUND FROM PAGE 1:", beforeValue);
+
+            return makeNameCandidate(
+              beforeValue,
+              1,
+              "Closest name before A1 question",
+            );
+          }
+        }
+
+        /*
+         * Fallback in case another PDF places the
+         * name after the Question 1 label.
+         */
+        for (
+          var afterIndex = questionOneIndex + 1;
+          afterIndex < Math.min(pageOneLines.length, questionOneIndex + 8);
+          afterIndex++
+        ) {
+          var afterValue = pageOneLines[afterIndex];
+
+          if (isPossiblePersonName(afterValue)) {
+            console.log("INSURED NAME FOUND AFTER A1:", afterValue);
+
+            return makeNameCandidate(
+              afterValue,
+              1,
+              "Closest name after A1 question",
+            );
+          }
+        }
+      }
+    }
+
+    /*
+     * FALLBACK METHOD:
+     * Search the signature page for the printed
+     * name associated with the Proposed Insured.
+     */
+    for (var pageIndex = pages.length - 1; pageIndex >= 0; pageIndex--) {
+      var page = pages[pageIndex];
+
+      var lines = page.text
+        .split("\n")
+        .map(function (line) {
+          return clean(line);
+        })
+        .filter(Boolean);
+
+      var signatureIndex = lines.findIndex(function (line) {
+        return /Signature of Proposed Insured/i.test(line);
+      });
+
+      if (signatureIndex < 0) {
+        continue;
+      }
+
+      /*
+       * In the extracted text, the printed name
+       * normally appears shortly after the
+       * Proposed Insured signature label.
+       */
+      for (
+        var signatureValueIndex = signatureIndex + 1;
+        signatureValueIndex < Math.min(lines.length, signatureIndex + 12);
+        signatureValueIndex++
+      ) {
+        var signatureValue = lines[signatureValueIndex];
+
+        if (isPossiblePersonName(signatureValue)) {
+          console.log(
+            "INSURED NAME FOUND FROM SIGNATURE PAGE:",
+            signatureValue,
+          );
+
+          return makeNameCandidate(
+            signatureValue,
+            page.pageNumber,
+            "Printed name near Proposed Insured signature",
+          );
+        }
+      }
+    }
+
+    console.warn("INSURED NAME WAS NOT FOUND");
+
+    return null;
+  }
+
+  function parseApplicationPlan(pages, isTerm) {
+    var patterns = isTerm
+      ? [
+          /(?:^|\n)\s*(Vantage\s+Term(?:\s+[A-Za-z0-9-]+)*)\s*\n\s*16\s*\./i,
+          /\b(Vantage\s+Term(?:\s+ART|\s+\d+)?)\b/i,
+        ]
+      : [
+          /(?:^|\n)\s*((?:Survivorship\s+)?Whole\s*Life\s*(?:Legacy\s*)?\d+|WholeLife\d+|WL\s*\d+)\s*\n\s*2\s*\./i,
+          /\b((?:Survivorship\s+)?Whole\s*Life\s*(?:Legacy\s*)?\d+|WholeLife\d+|WL\s*\d+)\b/i,
+        ];
+
+    return firstCandidate(pages, patterns, function (value) {
+      var cleaned = clean(value);
+      if (/^Vantage\s+Term/i.test(cleaned)) return cleaned;
+      return cleanPlanValue(cleaned);
+    });
+  }
+
+  function parseApplicationFaceAmount(pages, isTerm) {
+    var patterns = isTerm
+      ? [/(?:^|\n)\s*\$?\s*([1-9][\d,]*(?:\.\d{2})?)\s*\n\s*17\s*\./i]
+      : [
+          /(?:^|\n)\s*\$?\s*([1-9][\d,]*(?:\.\d{2})?)\s*\n\s*3\s*\./i,
+          /(?:^|\n)\s*\$?\s*([1-9][\d,]*(?:\.\d{2})?)\s*\n\s*1\s*\./i,
+        ];
+
+    return parseQuestionMoney(pages, patterns);
+  }
+
+  function parseApplicationApl(pages) {
+    return firstCandidate(
+      pages,
+      [
+        /(?:C\s*4|C4|4\s*\.)\s*Automatic Premium Loan[^\n]{0,100}/i,
+        /Automatic Premium Loan[^\n]{0,100}/i,
+      ],
+      selectedYesNo,
+    );
+  }
+
+  function parseApplicationLoanRate(pages) {
+    return firstCandidate(
+      pages,
+      [
+        /(?:C\s*5|C5|5\s*\.)\s*Loan rate[^\n]{0,100}?(Adjustable|Fixed)/i,
+        /Loan rate[^\n]{0,100}?(Adjustable|Fixed)/i,
+      ],
+      function (value) {
+        var match = clean(value).match(/Adjustable|Fixed/i);
+        return match ? match[0] : "";
+      },
+    );
+  }
+
+  function parseApplicationDividend(pages) {
+    return firstCandidate(
+      pages,
+      [
+        /(?:C\s*6|C6|6\s*\.)\s*Dividend Option[^\n]*(?:\[x\]|☒|■|✓|\bX\b)\s*(Paid[- ]?Up Additions?|Cash|Supplemental Insurance Dividend\/Flex|Dividend Accumulations?|Other)/i,
+        /(?:\[x\]|☒|■|✓|\bX\b)\s*(Paid[- ]?Up Additions?|Cash|Supplemental Insurance Dividend\/Flex|Dividend Accumulations?)/i,
+      ],
+      cleanDividendValue,
+    );
+  }
+
+  function parseApplicationWaiver(pages, isTerm) {
+    if (isTerm) {
+      var termCandidate = firstCandidate(
+        pages,
+        [/18\s*\.[^\n]{0,180}/i],
+        function (value) {
+          var text = clean(value);
+          if (/✔\s*Yes/i.test(text)) return "Yes";
+          if (/Yes[\s\S]{0,40}✔\s*(?:No|1R)/i.test(text)) return "No";
+          if (/\[WP\]\s*Y\b/i.test(text)) return "Yes";
+          if (/\[WP\]\s*N\b/i.test(text)) return "No";
+          return "";
+        },
+      );
+      return termCandidate;
+    }
+
+    return firstCandidate(
+      pages,
+      [
+        /7\s*\.[^\n]{0,180}/i,
+        /Waiver of Premium[^\n]{0,180}/i,
+        /\[WP\]\s*[YN]\b/i,
+      ],
+      function (value) {
+        var text = clean(value);
+        if (/Insured\s*1/i.test(text)) return "Insured 1";
+        if (/Insured\s*2/i.test(text)) return "Insured 2";
+        if (/✔\s*Yes/i.test(text)) return "Yes";
+        if (/Yes[\s\S]{0,40}✔\s*(?:No|1R)/i.test(text)) return "No";
+        return selectedYesNo(text);
+      },
+    );
+  }
+
+  function parseApplicationRiderYesNo(pages, question, label, code) {
+    var number = question.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    var labelEscaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    var patterns = [
+      new RegExp(
+        "(?:C\\s*" +
+          number +
+          "|C" +
+          number +
+          "|" +
+          number +
+          "\\.)\\s*" +
+          labelEscaped +
+          "[^\\n]{0,130}",
+        "i",
+      ),
+      new RegExp("\\[" + code + "\\]\\s*[YN]\\b", "i"),
+    ];
+    return firstCandidate(pages, patterns, selectedYesNo);
+  }
+
+  function parseApplicationLisrValues(pages) {
+    return {
+      tfa: parseQuestionMoney(pages, [
+        /(?:C\s*13a|C13a|13\.\s*a\.)\s*(?:Face Amount|Target Face Amount)\s*[:\-]?\s*\$?\s*([\d,]+(?:\.\d{2})?)/i,
+        /Life Insurance Supplement Rider[^\n]*[\s\S]{0,220}?a\.\s*Face Amount\s*[:\-]?\s*\$?\s*([\d,]+(?:\.\d{2})?)/i,
+      ]),
+      modal: parseQuestionMoney(pages, [
+        /(?:C\s*13b|C13b|13\.\s*b\.)\s*Modal Payment\s*[:\-]?\s*\$?\s*([\d,]+(?:\.\d{2})?)/i,
+        /Life Insurance Supplement Rider[^\n]*[\s\S]{0,320}?b\.\s*Modal Payment\s*[:\-]?\s*\$?\s*([\d,]+(?:\.\d{2})?)/i,
+      ]),
+      lumpSum: parseQuestionMoney(pages, [
+        /(?:C\s*13c|C13c|13\.\s*c\.)\s*Unscheduled Lump Sum\s*[:\-]?\s*\$?\s*([\d,]+(?:\.\d{2})?)/i,
+        /Life Insurance Supplement Rider[^\n]*[\s\S]{0,430}?c\.\s*Unscheduled Lump Sum\s*[:\-]?\s*\$?\s*([\d,]+(?:\.\d{2})?)/i,
+      ]),
+    };
+  }
+
   function parseDocument(kind, pages, text) {
     var documentType = classifyDocument(text);
-
     var result = {};
 
     if (kind === "app") {
+      var wholeLifePlan = parseApplicationPlan(pages, false);
+      var termPlan = parseApplicationPlan(pages, true);
+      var applicationIsTerm = !!termPlan && !wholeLifePlan;
+      var selectedPlan = applicationIsTerm ? termPlan : wholeLifePlan;
+      var lisrValues = parseApplicationLisrValues(pages);
+
       result.insuredName = candidateItem(
-        firstCandidate(
-          pages,
-          [
-            /Full legal name\s*\(First,\s*MI,\s*Last,\s*Suffix\)\s*[:\-]?\s*([A-Za-z\s.'-]{3,80})/i,
-
-            /Proposed Insured(?: Name)?\s*[:\-]?\s*([A-Za-z\s.'-]{3,80})/i,
-          ],
-
-          function (value) {
-            return clean(value);
-          },
-        ),
-
+        parseApplicationInsuredName(pages),
         documentType,
       );
-
+      result.plan = candidateItem(selectedPlan, documentType);
       result.faceAmount = candidateItem(
-        firstCandidate(
-          pages,
-          [
-            /Face Amount\s*[:\-]?\s*\$?([\d,]+)/i,
-
-            /Amount of Insurance\s*[:\-]?\s*\$?([\d,]+)/i,
-
-            /Initial Face Amount\s*[:\-]?\s*\$?([\d,]+)/i,
-          ],
-
-          function (value) {
-            return "$" + String(value).replace(/[^\d,]/g, "");
-          },
-        ),
-
+        parseApplicationFaceAmount(pages, applicationIsTerm),
         documentType,
+      );
+      result.apl = candidateItem(parseApplicationApl(pages), documentType);
+      result.loanRate = candidateItem(
+        parseApplicationLoanRate(pages),
+        documentType,
+      );
+      result.dividend = candidateItem(
+        parseApplicationDividend(pages),
+        documentType,
+      );
+      result.waiver = candidateItem(
+        parseApplicationWaiver(pages, applicationIsTerm),
+        documentType,
+      );
+      result.gir = candidateItem(
+        parseApplicationRiderYesNo(
+          pages,
+          "10",
+          "Guaranteed Insurability Rider",
+          "GIR",
+        ),
+        documentType,
+      );
+      result.rtr = candidateItem(
+        parseApplicationRiderYesNo(pages, "11", "Renewable Term Rider", "RTR"),
+        documentType,
+      );
+      result.lisrTfa = candidateItem(lisrValues.tfa, documentType);
+      result.lisrModal = candidateItem(lisrValues.modal, documentType);
+      result.lisrLumpSum = candidateItem(lisrValues.lumpSum, documentType);
+      result.lisr = item(
+        result.lisrTfa.v || result.lisrModal.v || result.lisrLumpSum.v
+          ? "Yes"
+          : "No",
+        88,
+        {
+          documentType: documentType,
+          extractionMethod: "C13 LISR question map",
+        },
       );
     } else {
       result.insuredName = candidateItem(
@@ -657,6 +1034,7 @@
         ]),
         documentType,
       );
+      result.plan = candidateItem(parsePlanFromPages(pages), documentType);
       result.faceAmount = candidateItem(
         firstCandidate(
           pages,
@@ -667,102 +1045,87 @@
         ),
         documentType,
       );
-    }
-    result.plan = candidateItem(
-      firstCandidate(
-        pages,
-        [
-          /2\.\s*Plan\s*[:\-]?\s*(WholeLife\d+|Whole Life \d+|WL\s*\d+)/i,
-
-          /Plan\s*[:\-]?\s*(WholeLife\d+|Whole Life \d+|WL\s*\d+)/i,
-
-          /Vantage\s+Term\s+\d+/i,
-        ],
-
-        cleanPlanValue,
-      ),
-
-      documentType,
-    );
-    result.apl = candidateItem(parseAplFromPages(pages), documentType);
-    result.dividend = candidateItem(
-      parseDividendFromPages(pages),
-      documentType,
-    );
-    result.waiver = candidateItem(parseWaiverFromPages(pages), documentType);
-    result.loanRate = candidateItem(
-      firstCandidate(pages, [
-        /Loan (?:Interest )?Rate[^\n]{0,80}\b(Adjustable|Fixed)\b/i,
-      ]),
-      documentType,
-    );
-    result.gir = candidateItem(
-      firstCandidate(
-        pages,
-        [/(?:Guaranteed Insurability Rider|\bGIR\b)\s*[:\-]?\s*([^\n]{1,65})/i],
-        function (v) {
-          return money(v) || clean(v);
+      result.apl = candidateItem(parseAplFromPages(pages), documentType);
+      result.loanRate = candidateItem(
+        firstCandidate(pages, [
+          /Loan (?:Interest )?Rate[^\n]{0,80}\b(Adjustable|Fixed)\b/i,
+        ]),
+        documentType,
+      );
+      result.dividend = candidateItem(
+        parseDividendFromPages(pages),
+        documentType,
+      );
+      result.waiver = candidateItem(parseWaiverFromPages(pages), documentType);
+      result.gir = candidateItem(
+        firstCandidate(
+          pages,
+          [
+            /(?:Guaranteed Insurability Rider|\bGIR\b)\s*[:\-]?\s*([^\n]{1,65})/i,
+          ],
+          function (value) {
+            var yn = selectedYesNo(value);
+            return yn || money(value) || clean(value);
+          },
+        ),
+        documentType,
+      );
+      result.rtr = candidateItem(
+        firstCandidate(pages, [
+          /(?:Renewable Term Rider|\bRTR\b)\s*[:\-]?\s*([^\n]{1,65})/i,
+        ]),
+        documentType,
+      );
+      result.lisrTfa = candidateItem(
+        parseLisrTfaFromPages(pages),
+        documentType,
+      );
+      result.lisrModal = candidateItem(
+        parseLisrModalFromPages(pages),
+        documentType,
+      );
+      result.lisrLumpSum = candidateItem(
+        parseLisrLumpSumFromPages(pages),
+        documentType,
+      );
+      result.lisr = item(
+        result.lisrTfa.v ||
+          result.lisrModal.v ||
+          result.lisrLumpSum.v ||
+          /\[LISR\]\s*Y\b/i.test(text)
+          ? "Yes"
+          : "No",
+        86,
+        {
+          documentType: documentType,
+          extractionMethod: "Illustration LISR values",
         },
-      ),
-      documentType,
-    );
-    result.lisr = item(
-      /Life Insurance Supplement Rider|\bLISR\b/i.test(text) ? "Yes" : "No",
-      86,
-      {
-        documentType: documentType,
-        extractionMethod: "Document presence check",
-      },
-    );
-    result.lisrTfa = candidateItem(parseLisrTfaFromPages(pages), documentType);
+      );
+    }
 
-    result.lisrModal = candidateItem(
-      parseLisrModalFromPages(pages),
-      documentType,
-    );
-
-    result.lisrLumpSum = candidateItem(
-      parseLisrLumpSumFromPages(pages),
-      documentType,
-    );
-    result.billing = candidateItem(
-      firstCandidate(pages, [
-        /(?:Billing Type|Payment Method)\s*[:\-]?\s*([^\n]{2,90})/i,
-        /Billing type[^\n]{0,80}\b(Pre-Authorized Check|Individual Direct Bill|Group Bill|PAC)\b/i,
-      ]),
-      documentType,
-    );
     result.frequency = candidateItem(
       firstCandidate(
         pages,
         [
           /(?:Premium Payment Mode|Premium Mode|Payment Frequency|Premium Frequency|Frequency|Mode)\s*[:\-]?\s*([^\n]{2,60})/i,
         ],
-        function (v) {
-          var match = v.match(
+        function (value) {
+          var match = value.match(
             /\b(Monthly|Quarterly|Semi-annual|Semi Annual|Annual|Single Premium)\b/i,
           );
-          return match ? match[1] : clean(v);
+          return match ? match[1] : clean(value);
         },
       ),
       documentType,
     );
-    var created = [],
-      rx =
-        /(?:Created|Creation|Prepared) Date\s*[:\-]?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/gi,
-      m;
-    while ((m = rx.exec(text)) !== null)
-      if (created.indexOf(m[1]) < 0) created.push(m[1]);
-    result.createdDates = item(created.join(", "), created.length ? 88 : 15, {
-      documentType: documentType,
-      extractionMethod: "All-date collection",
-    });
+
     result.signedDate = candidateItem(
       firstCandidate(pages, [
         /(?:Owner|Producer|Proposed Insured)?\s*Signature[^\n]{0,100}?Date\s*[:\-]?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i,
       ]),
       documentType,
     );
+
     result.signatureEvidence = item(
       /docusign envelope id|owner signature|producer signature|proposed insured signature|signature of/i.test(
         text,
@@ -775,7 +1138,40 @@
         extractionMethod: "Signature text presence check",
       },
     );
+
     return applyLearning(kind, result, documentType);
+  }
+
+  function applyProductApplicability() {
+    if (!docs.app || !docs.ill || !docs.app.fields || !docs.ill.fields) return;
+
+    var appPlan = clean(docs.app.fields.plan ? docs.app.fields.plan.v : "");
+    var isTerm = /^vantage\s+term\b/i.test(appPlan);
+    var excluded = [
+      "apl",
+      "loanRate",
+      "dividend",
+      "gir",
+      "rtr",
+      "lisr",
+      "lisrTfa",
+      "lisrModal",
+      "lisrLumpSum",
+    ];
+
+    if (!isTerm) return;
+
+    ["app", "ill"].forEach(function (kind) {
+      excluded.forEach(function (key) {
+        if (!docs[kind].fields[key]) return;
+        docs[kind].fields[key].v = "N/A";
+        docs[kind].fields[key].originalValue = "N/A";
+        docs[kind].fields[key].c = 100;
+        docs[kind].fields[key].confirmed = true;
+        docs[kind].fields[key].excluded = true;
+        docs[kind].fields[key].learned = false;
+      });
+    });
   }
 
   async function extractPdf(file, kind) {
@@ -1137,6 +1533,18 @@
         ]);
         docs.app = both[0];
         docs.ill = both[1];
+        applyProductApplicability();
+        console.table(
+          Object.keys(docs.app.fields).map(function (key) {
+            return {
+              field: key,
+              value: docs.app.fields[key].v,
+              confidence: docs.app.fields[key].c,
+              page: docs.app.fields[key].pageNumber || "",
+              method: docs.app.fields[key].extractionMethod || "",
+            };
+          }),
+        );
 
         var learnedCount = 0;
 
@@ -1311,14 +1719,6 @@
         note: note,
       });
     });
-    var appFrequency = app.frequency ? app.frequency.v : "",
-      appBilling = app.billing ? app.billing.v : "";
-    if (/annual/i.test(appFrequency) && /pre-authorized|pac/i.test(appBilling))
-      addRequirement(
-        requirements,
-        templates.annualPac(),
-        "Annual PAC combination",
-      );
     if (state === "NY") {
       var signature = ill.signatureEvidence ? ill.signatureEvidence.v : "";
       if (normalized(signature) !== "signed")
@@ -1336,20 +1736,6 @@
           ill: ill.signedDate.v,
           result: "Mismatch",
           note: "Illustration signature date is after the Part 1 signature date.",
-        });
-      var dates = (ill.createdDates ? ill.createdDates.v : "")
-        .split(",")
-        .map(function (value) {
-          return value.trim();
-        })
-        .filter(Boolean);
-      if (dates.length > 1)
-        rows.push({
-          label: "NY created dates",
-          app: "One consistent date required",
-          ill: ill.createdDates.v,
-          result: "Mismatch",
-          note: "Multiple illustration created dates were extracted.",
         });
     } else if (
       normalized(app.lisr ? app.lisr.v : "") === "yes" &&
