@@ -6,7 +6,7 @@
     <title>Application & Illustration Validator</title>
     <link
       rel="stylesheet"
-      href="{{ url_for('static', filename='../static/validation.css') }}" />
+      href="{{ url_for('static', filename='/validation.css') }}" />
   </head>
   <body>
     <header>
@@ -122,6 +122,6 @@
         <div id="results" class="empty">No validation has been run.</div>
       </section>
     </main>
-    <script src="{{ url_for('static', filename='../static/validation.js') }}"></script>
+    <script src="{{ url_for('static', filename='/validation.js') }}"></script>
   </body>
 </html>
